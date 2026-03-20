@@ -16,16 +16,17 @@ const ACCOUNT_BALANCE = 50000;
 const RISK_PERCENT    = 0.0005;  // 0.05% = €25/trade (verlaagd van 0.1%)
 const RISK_EUR        = ACCOUNT_BALANCE * RISK_PERCENT;
 
-// ── SYMBOL MAPPING (TradingView → MT5 TMS) ───────────────────
+// ── SYMBOL MAPPING (TradingView → MT5 exacte namen) ──────────
+// Bevestigd via MT5 desktop platform maart 2026
 const SYMBOL_MAP = {
-  // ── INDICES €25/punt/lot (gecalibreerd op DE30 echte trade) ──
+  // ── INDICES ───────────────────────────────────────────────────
   "GER40":   { mt5: "DE30.pro",   type: "index" },
   "DE30":    { mt5: "DE30.pro",   type: "index" },
   "GER30":   { mt5: "DE30.pro",   type: "index" },
   "EU50":    { mt5: "EU50.pro",   type: "index" },
   "EUSTX50": { mt5: "EU50.pro",   type: "index" },
-  "FRA40":   { mt5: "FRA40.pro",  type: "index" },
-  "CAC40":   { mt5: "FRA40.pro",  type: "index" },
+  "FRA40":   { mt5: "FR40.pro",   type: "index" },
+  "CAC40":   { mt5: "FR40.pro",   type: "index" },
   "UK100":   { mt5: "GB100.pro",  type: "index" },
   "FTSE100": { mt5: "GB100.pro",  type: "index" },
   "US100":   { mt5: "US100.pro",  type: "index" },
@@ -34,6 +35,7 @@ const SYMBOL_MAP = {
   "DJ30":    { mt5: "US30.pro",   type: "index" },
   "US500":   { mt5: "US500.pro",  type: "index" },
   "SPX500":  { mt5: "US500.pro",  type: "index" },
+  "SP500":   { mt5: "US500.pro",  type: "index" },
   "JP225":   { mt5: "JP225.pro",  type: "index" },
   "NKY225":  { mt5: "JP225.pro",  type: "index" },
   "AU200":   { mt5: "AU200.pro",  type: "index" },
@@ -42,15 +44,15 @@ const SYMBOL_MAP = {
   // ── METALEN ──────────────────────────────────────────────────
   "XAUUSD":  { mt5: "GOLD.pro",   type: "gold"   },
   "GOLD":    { mt5: "GOLD.pro",   type: "gold"   },
-  "XAGUSD":  { mt5: "Silver.pro", type: "silver" },
-  "SILVER":  { mt5: "Silver.pro", type: "silver" },
+  "XAGUSD":  { mt5: "SILVER.pro", type: "silver" },
+  "SILVER":  { mt5: "SILVER.pro", type: "silver" },
 
   // ── GRONDSTOFFEN ─────────────────────────────────────────────
-  "NATGAS":  { mt5: "NATRGAS.pro",  type: "natgas" },
-  "NGAS":    { mt5: "NATRGAS.pro",  type: "natgas" },
-  "UKOIL":   { mt5: "OILBRENT.pro", type: "brent"  },
-  "USOIL":   { mt5: "OILBRENT.pro", type: "brent"  },
-  "BRENT":   { mt5: "OILBRENT.pro", type: "brent"  },
+  "NATGAS":  { mt5: "NATGAS.pro",  type: "natgas" },
+  "NGAS":    { mt5: "NATGAS.pro",  type: "natgas" },
+  "UKOIL":   { mt5: "OILBRNT.pro", type: "brent"  },
+  "USOIL":   { mt5: "OILBRNT.pro", type: "brent"  },
+  "BRENT":   { mt5: "OILBRNT.pro", type: "brent"  },
 
   // ── CRYPTO ───────────────────────────────────────────────────
   "BTCUSD":  { mt5: "BTCUSD",  type: "btc" },
@@ -71,21 +73,20 @@ const LOT_VALUE = {
 
 // ── MINIMUM STOP DISTANCE (voorkomt INVALID_STOPS errors) ────
 const MIN_STOP = {
-  "DE30.pro":     5.0,
-  "EU50.pro":     3.0,
-  "FRA40.pro":    3.0,
-  "GB100.pro":    5.0,
-  "US100.pro":    5.0,
-  "US30.pro":     5.0,
-  "US500.pro":    2.0,
-  "JP225.pro":   10.0,
-  "AU200.pro":    3.0,
-  "GOLD.pro":     0.5,
-  "Silver.pro":   0.05,
-  "NATRGAS.pro":  0.02,
-  "OILBRENT.pro": 0.05,
-  "BTCUSD":      50.0,
-  // Stocks: min 0.01 punt SL afstand
+  "DE30.pro":    5.0,
+  "EU50.pro":    3.0,
+  "FR40.pro":    3.0,
+  "GB100.pro":   5.0,
+  "US100.pro":   5.0,
+  "US30.pro":    5.0,
+  "US500.pro":   2.0,
+  "JP225.pro":  10.0,
+  "AU200.pro":   3.0,
+  "GOLD.pro":    0.5,
+  "SILVER.pro":  0.05,
+  "NATGAS.pro":  0.02,
+  "OILBRNT.pro": 0.05,
+  "BTCUSD":     50.0,
   "default_stock": 0.01,
 };
 
@@ -224,7 +225,7 @@ app.post("/webhook", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status:    "online",
-    versie:    "v5",
+    versie:    "v6",
     risicoEUR: RISK_EUR,
     symbols:   Object.keys(SYMBOL_MAP),
   });
