@@ -66,6 +66,7 @@ const LOT_VALUE = {
   "natgas":   8.60, // NATRGAS: 0.01lot × 0.05pt = €0.0043 → €8.60/pt/lot ✓
   "brent":   87.27, // OILBRENT: 0.01lot × 0.011pt = €0.0096 → €87.27/pt/lot ✓
   "btc":      0.92, // BTC: standaard CFD waarde (nog te calibreren)
+  "stock":    1.00, // Stocks: 1 lot = 1 share, €1/punt/lot (CFD)
 };
 
 // ── MINIMUM STOP DISTANCE (voorkomt INVALID_STOPS errors) ────
@@ -84,6 +85,8 @@ const MIN_STOP = {
   "NATRGAS.pro":  0.02,
   "OILBRENT.pro": 0.05,
   "BTCUSD":      50.0,
+  // Stocks: min 0.01 punt SL afstand
+  "default_stock": 0.01,
 };
 
 // ── MAX LOTS PER INSTRUMENT ───────────────────────────────────
@@ -94,18 +97,34 @@ const MAX_LOTS = {
   "natgas": 5.0,
   "brent":  2.0,
   "btc":    0.1,
+  "stock": 100.0, // stocks: max 100 shares
 };
+
+// ── AUTO .pro FALLBACK (TMS conventie voor alle stocks) ───────
+// Alle onbekende tickers → automatisch .pro suffix
+// AAPL → AAPL.pro | AGS → AGS.pro | TSLA → TSLA.pro
+// Geen mapping nodig voor BE/UK/US stocks!
+const CRYPTO_PREFIXES = ["BTC","ETH","XRP","LTC","BCH","ADA","DOT","SOL"];
+function getMT5Symbol(symbol) {
+  if (SYMBOL_MAP[symbol]) return SYMBOL_MAP[symbol].mt5;
+  if (CRYPTO_PREFIXES.some(c => symbol.startsWith(c))) return symbol;
+  return symbol.endsWith(".pro") ? symbol : `${symbol}.pro`;
+}
+
+function getSymbolType(symbol) {
+  if (SYMBOL_MAP[symbol]) return SYMBOL_MAP[symbol].type;
+  if (CRYPTO_PREFIXES.some(c => symbol.startsWith(c))) return "btc";
+  return "stock"; // alle onbekende tickers = stock
+}
 
 // ── LOT SIZE BEREKENING ───────────────────────────────────────
 function calcLots(symbol, entry, sl) {
-  const info = SYMBOL_MAP[symbol];
-  if (!info) return 0.01;
+  const type     = getSymbolType(symbol);
+  const lotValue = LOT_VALUE[type] || 1.0;
+  const maxLots  = MAX_LOTS[type]  || 100.0;
 
   const slDistance = Math.abs(entry - sl);
   if (slDistance <= 0) return 0.01;
-
-  const lotValue = LOT_VALUE[info.type] || 1.0;
-  const maxLots  = MAX_LOTS[info.type]  || 2.0;
 
   let lots = RISK_EUR / (slDistance * lotValue);
   lots = Math.round(lots * 100) / 100;
@@ -116,7 +135,7 @@ function calcLots(symbol, entry, sl) {
 
 // ── SL VALIDATIE ─────────────────────────────────────────────
 function validateSL(direction, entry, sl, mt5Symbol) {
-  const minDist = MIN_STOP[mt5Symbol] || 5.0;
+  const minDist = MIN_STOP[mt5Symbol] || MIN_STOP["default_stock"] || 0.01;
   const slDist  = Math.abs(entry - sl);
   if (slDist < minDist) {
     const adjusted = direction === "buy" ? entry - minDist : entry + minDist;
@@ -128,8 +147,7 @@ function validateSL(direction, entry, sl, mt5Symbol) {
 
 // ── ORDER PLAATSEN VIA MetaApi ────────────────────────────────
 async function placeOrder(direction, symbol, entry, sl, lots) {
-  const info      = SYMBOL_MAP[symbol];
-  const mt5Symbol = info?.mt5 || symbol;
+  const mt5Symbol = getMT5Symbol(symbol);
   const orderType = direction === "buy" ? "ORDER_TYPE_BUY" : "ORDER_TYPE_SELL";
   const slPrice   = validateSL(direction, parseFloat(entry), parseFloat(sl), mt5Symbol);
 
@@ -186,9 +204,10 @@ app.post("/webhook", async (req, res) => {
 
     const lots      = calcLots(symbol, entryNum, slNum);
     const slAfstand = Math.abs(entryNum - slNum).toFixed(4);
-    const mt5Sym    = SYMBOL_MAP[symbol]?.mt5 || symbol;
+    const mt5Sym    = getMT5Symbol(symbol);
+    const symType   = getSymbolType(symbol);
 
-    console.log(`📊 ${direction.toUpperCase()} ${symbol} (${mt5Sym}) | Entry: ${entryNum} | SL: ${slNum} | Afstand: ${slAfstand} | Lots: ${lots} | Risico: €${RISK_EUR}`);
+    console.log(`📊 ${direction.toUpperCase()} ${symbol} (${mt5Sym}) [${symType}] | Entry: ${entryNum} | SL: ${slNum} | Afstand: ${slAfstand} | Lots: ${lots} | Risico: €${RISK_EUR}`);
 
     const result = await placeOrder(direction, symbol, entryNum, slNum, lots);
     console.log("✅ Order resultaat:", JSON.stringify(result));
@@ -205,7 +224,7 @@ app.post("/webhook", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status:    "online",
-    versie:    "v4",
+    versie:    "v5",
     risicoEUR: RISK_EUR,
     symbols:   Object.keys(SYMBOL_MAP),
   });
