@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v4
+// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v7
 // Account: 62670737  |  Demo €50.000  |  Risico: 0.05% = €25/trade
 // Gecalibreerd op echte TMS trade data — maart 2026
 // ═══════════════════════════════════════════════════════════════
@@ -57,6 +57,110 @@ const SYMBOL_MAP = {
   // ── CRYPTO ───────────────────────────────────────────────────
   "BTCUSD":  { mt5: "BTCUSD",  type: "btc" },
   "BITCOIN": { mt5: "BTCUSD",  type: "btc" },
+
+  // ── US STOCKS (_CFD.US) ───────────────────────────────────────
+  "AAPL":   { mt5: "AAPL_CFD.US",   type: "stock" },
+  "MSFT":   { mt5: "MSFT_CFD.US",   type: "stock" },
+  "NVDA":   { mt5: "NVDA_CFD.US",   type: "stock" },
+  "AMZN":   { mt5: "AMZN_CFD.US",   type: "stock" },
+  "GOOGL":  { mt5: "GOOGL_CFD.US",  type: "stock" },
+  "GOOG":   { mt5: "GOOG_CFD.US",   type: "stock" },
+  "META":   { mt5: "META_CFD.US",   type: "stock" },
+  "TSLA":   { mt5: "TSLA_CFD.US",   type: "stock" },
+  "NFLX":   { mt5: "NFLX_CFD.US",   type: "stock" },
+  "AMD":    { mt5: "AMD_CFD.US",    type: "stock" },
+  "INTC":   { mt5: "INTC_CFD.US",   type: "stock" },
+  "QCOM":   { mt5: "QCOM_CFD.US",   type: "stock" },
+  "AVGO":   { mt5: "AVGO_CFD.US",   type: "stock" },
+  "ORCL":   { mt5: "ORCL_CFD.US",   type: "stock" },
+  "CRM":    { mt5: "CRM_CFD.US",    type: "stock" },
+  "ADBE":   { mt5: "ADBE_CFD.US",   type: "stock" },
+  "NOW":    { mt5: "NOW_CFD.US",    type: "stock" },
+  "PLTR":   { mt5: "PLTR_CFD.US",   type: "stock" },
+  "BBAI":   { mt5: "BBAI_CFD.US",   type: "stock" },
+  "MP":     { mt5: "MP_CFD.US",     type: "stock" },
+  "JPM":    { mt5: "JPM_CFD.US",    type: "stock" },
+  "BAC":    { mt5: "BAC_CFD.US",    type: "stock" },
+  "GS":     { mt5: "GS_CFD.US",     type: "stock" },
+  "MS":     { mt5: "MS_CFD.US",     type: "stock" },
+  "V":      { mt5: "V_CFD.US",      type: "stock" },
+  "MA":     { mt5: "MA_CFD.US",     type: "stock" },
+  "WMT":    { mt5: "WMT_CFD.US",    type: "stock" },
+  "JNJ":    { mt5: "JNJ_CFD.US",    type: "stock" },
+  "PFE":    { mt5: "PFE_CFD.US",    type: "stock" },
+  "UNH":    { mt5: "UNH_CFD.US",    type: "stock" },
+  "XOM":    { mt5: "XOM_CFD.US",    type: "stock" },
+  "CVX":    { mt5: "CVX_CFD.US",    type: "stock" },
+  "DIS":    { mt5: "DIS_CFD.US",    type: "stock" },
+  "UBER":   { mt5: "UBER_CFD.US",   type: "stock" },
+  "COIN":   { mt5: "COIN_CFD.US",   type: "stock" },
+  "RBLX":   { mt5: "RBLX_CFD.US",   type: "stock" },
+  "RIVN":   { mt5: "RIVN_CFD.US",   type: "stock" },
+  "NIO":    { mt5: "NIO_CFD.US",    type: "stock" },
+  "BABA":   { mt5: "BABA_CFD.US",   type: "stock" },
+  "SPCE":   { mt5: "SPCE_CFD.US",   type: "stock" },
+  "GME":    { mt5: "GME_CFD.US",    type: "stock" },
+  "AMC":    { mt5: "AMC_CFD.US",    type: "stock" },
+
+  // ── BELGISCHE STOCKS (_CFD.BE) ────────────────────────────────
+  "AGS":    { mt5: "AGS_CFD.BE",    type: "stock" },
+  "ABI":    { mt5: "ABI_CFD.BE",    type: "stock" },
+  "KBC":    { mt5: "KBC_CFD.BE",    type: "stock" },
+  "UCB":    { mt5: "UCB_CFD.BE",    type: "stock" },
+  "SOLB":   { mt5: "SOLB_CFD.BE",   type: "stock" },
+  "GBLB":   { mt5: "GBLB_CFD.BE",   type: "stock" },
+  "ACKB":   { mt5: "ACKB_CFD.BE",   type: "stock" },
+  "PROXB":  { mt5: "PROXB_CFD.BE",  type: "stock" },
+  "COLR":   { mt5: "COLR_CFD.BE",   type: "stock" },
+  "BEFB":   { mt5: "BEFB_CFD.BE",   type: "stock" },
+  "SOFB":   { mt5: "SOFB_CFD.BE",   type: "stock" },
+  "ARGX":   { mt5: "ARGX_CFD.BE",   type: "stock" },
+  "BPOST":  { mt5: "BPOST_CFD.BE",  type: "stock" },
+  "TINC":   { mt5: "TINC_CFD.BE",   type: "stock" },
+  "MELB":   { mt5: "MELB_CFD.BE",   type: "stock" },
+  "UMICORE":{ mt5: "UMI_CFD.BE",    type: "stock" },
+  "UMI":    { mt5: "UMI_CFD.BE",    type: "stock" },
+
+  // ── UK STOCKS (_CFD.UK) ───────────────────────────────────────
+  "BARC":   { mt5: "BARC_CFD.UK",   type: "stock" },
+  "LLOY":   { mt5: "LLOY_CFD.UK",   type: "stock" },
+  "HSBA":   { mt5: "HSBA_CFD.UK",   type: "stock" },
+  "BP":     { mt5: "BP_CFD.UK",     type: "stock" },
+  "SHEL":   { mt5: "SHEL_CFD.UK",   type: "stock" },
+  "VOD":    { mt5: "VOD_CFD.UK",    type: "stock" },
+  "GSK":    { mt5: "GSK_CFD.UK",    type: "stock" },
+  "AZN":    { mt5: "AZN_CFD.UK",    type: "stock" },
+  "RIO":    { mt5: "RIO_CFD.UK",    type: "stock" },
+  "GLEN":   { mt5: "GLEN_CFD.UK",   type: "stock" },
+  "LSEG":   { mt5: "LSEG_CFD.UK",   type: "stock" },
+  "REL":    { mt5: "REL_CFD.UK",    type: "stock" },
+  "ULVR":   { mt5: "ULVR_CFD.UK",   type: "stock" },
+  "DGE":    { mt5: "DGE_CFD.UK",    type: "stock" },
+  "RKT":    { mt5: "RKT_CFD.UK",    type: "stock" },
+  "IAG":    { mt5: "IAG_CFD.UK",    type: "stock" },
+  "EZJ":    { mt5: "EZJ_CFD.UK",    type: "stock" },
+  "BT":     { mt5: "BT_CFD.UK",     type: "stock" },
+
+  // ── DUITSE STOCKS (_CFD.DE) ───────────────────────────────────
+  "SAP":    { mt5: "SAP_CFD.DE",    type: "stock" },
+  "SIE":    { mt5: "SIE_CFD.DE",    type: "stock" },
+  "ALV":    { mt5: "ALV_CFD.DE",    type: "stock" },
+  "BMW":    { mt5: "BMW_CFD.DE",    type: "stock" },
+  "MBG":    { mt5: "MBG_CFD.DE",    type: "stock" },
+  "VOW3":   { mt5: "VOW3_CFD.DE",   type: "stock" },
+  "BAS":    { mt5: "BAS_CFD.DE",    type: "stock" },
+  "BAYN":   { mt5: "BAYN_CFD.DE",   type: "stock" },
+  "MRK":    { mt5: "MRK_CFD.DE",    type: "stock" },
+  "DBK":    { mt5: "DBK_CFD.DE",    type: "stock" },
+  "DTE":    { mt5: "DTE_CFD.DE",    type: "stock" },
+  "ADS":    { mt5: "ADS_CFD.DE",    type: "stock" },
+  "IFX":    { mt5: "IFX_CFD.DE",    type: "stock" },
+  "ENR":    { mt5: "ENR_CFD.DE",    type: "stock" },
+  "RWE":    { mt5: "RWE_CFD.DE",    type: "stock" },
+  "HNR1":   { mt5: "HNR1_CFD.DE",   type: "stock" },
+  "HEI":    { mt5: "HEI_CFD.DE",    type: "stock" },
+  "CON":    { mt5: "CON_CFD.DE",    type: "stock" },
+  "LIN":    { mt5: "LIN_CFD.DE",    type: "stock" },
 };
 
 // ── LOT VALUE PER PUNT PER LOT (EUR) ─────────────────────────
@@ -101,15 +205,16 @@ const MAX_LOTS = {
   "stock": 100.0, // stocks: max 100 shares
 };
 
-// ── AUTO .pro FALLBACK (TMS conventie voor alle stocks) ───────
-// Alle onbekende tickers → automatisch .pro suffix
-// AAPL → AAPL.pro | AGS → AGS.pro | TSLA → TSLA.pro
-// Geen mapping nodig voor BE/UK/US stocks!
+// ── AUTO FALLBACK VOOR ONBEKENDE STOCKS ──────────────────────
+// Als ticker niet in SYMBOL_MAP staat:
+// - Crypto → geen suffix
+// - Alles anders → probeer _CFD.US als fallback
 const CRYPTO_PREFIXES = ["BTC","ETH","XRP","LTC","BCH","ADA","DOT","SOL"];
 function getMT5Symbol(symbol) {
   if (SYMBOL_MAP[symbol]) return SYMBOL_MAP[symbol].mt5;
   if (CRYPTO_PREFIXES.some(c => symbol.startsWith(c))) return symbol;
-  return symbol.endsWith(".pro") ? symbol : `${symbol}.pro`;
+  // Fallback: probeer _CFD.US voor onbekende US stocks
+  return `${symbol}_CFD.US`;
 }
 
 function getSymbolType(symbol) {
@@ -225,7 +330,7 @@ app.post("/webhook", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status:    "online",
-    versie:    "v6",
+    versie:    "v7",
     risicoEUR: RISK_EUR,
     symbols:   Object.keys(SYMBOL_MAP),
   });
