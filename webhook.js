@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v7
+// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v8
 // Account: 62670737  |  Demo €50.000  |  Risico: 0.05% = €25/trade
 // Gecalibreerd op echte TMS trade data — maart 2026
 // ═══════════════════════════════════════════════════════════════
@@ -17,9 +17,21 @@ const RISK_PERCENT    = 0.0005;  // 0.05% = €25/trade (verlaagd van 0.1%)
 const RISK_EUR        = ACCOUNT_BALANCE * RISK_PERCENT;
 
 // ── SYMBOL MAPPING (TradingView → MT5 exacte namen) ──────────
-// Bevestigd via MT5 desktop platform maart 2026
+// Exact TV ticker names confirmed from TradingView alerts screenshots
 const SYMBOL_MAP = {
-  // ── INDICES ───────────────────────────────────────────────────
+  // ── INDICES — OANDA TV tickers ────────────────────────────────
+  // Confirmed exact names from TradingView alerts:
+  "NAS100USD":  { mt5: "US100.pro",  type: "index" },
+  "SPX500USD":  { mt5: "US500.pro",  type: "index" },
+  "US30USD":    { mt5: "US30.pro",   type: "index" },
+  "UK100GBP":   { mt5: "GB100.pro",  type: "index" },
+  "DE30EUR":    { mt5: "DE30.pro",   type: "index" },
+  "FR40EUR":    { mt5: "FR40.pro",   type: "index" },
+  "EU50EUR":    { mt5: "EU50.pro",   type: "index" },
+  "JP225USD":   { mt5: "JP225.pro",  type: "index" },
+  "AU200AUD":   { mt5: "AU200.pro",  type: "index" },
+
+  // ── INDICES — alternative TV tickers (fallback) ───────────────
   "GER40":   { mt5: "DE30.pro",   type: "index" },
   "DE30":    { mt5: "DE30.pro",   type: "index" },
   "GER30":   { mt5: "DE30.pro",   type: "index" },
@@ -41,13 +53,13 @@ const SYMBOL_MAP = {
   "AU200":   { mt5: "AU200.pro",  type: "index" },
   "ASX200":  { mt5: "AU200.pro",  type: "index" },
 
-  // ── METALEN ──────────────────────────────────────────────────
+  // ── METALS ───────────────────────────────────────────────────
   "XAUUSD":  { mt5: "GOLD.pro",   type: "gold"   },
   "GOLD":    { mt5: "GOLD.pro",   type: "gold"   },
   "XAGUSD":  { mt5: "SILVER.pro", type: "silver" },
   "SILVER":  { mt5: "SILVER.pro", type: "silver" },
 
-  // ── GRONDSTOFFEN ─────────────────────────────────────────────
+  // ── COMMODITIES ──────────────────────────────────────────────
   "NATGAS":  { mt5: "NATGAS.pro",  type: "natgas" },
   "NGAS":    { mt5: "NATGAS.pro",  type: "natgas" },
   "UKOIL":   { mt5: "OILBRNT.pro", type: "brent"  },
@@ -75,34 +87,27 @@ const SYMBOL_MAP = {
   "ORCL":   { mt5: "ORCL_CFD.US",   type: "stock" },
   "CRM":    { mt5: "CRM_CFD.US",    type: "stock" },
   "ADBE":   { mt5: "ADBE_CFD.US",   type: "stock" },
-  "NOW":    { mt5: "NOW_CFD.US",    type: "stock" },
   "PLTR":   { mt5: "PLTR_CFD.US",   type: "stock" },
   "BBAI":   { mt5: "BBAI_CFD.US",   type: "stock" },
   "MP":     { mt5: "MP_CFD.US",     type: "stock" },
   "JPM":    { mt5: "JPM_CFD.US",    type: "stock" },
   "BAC":    { mt5: "BAC_CFD.US",    type: "stock" },
   "GS":     { mt5: "GS_CFD.US",     type: "stock" },
-  "MS":     { mt5: "MS_CFD.US",     type: "stock" },
   "V":      { mt5: "V_CFD.US",      type: "stock" },
   "MA":     { mt5: "MA_CFD.US",     type: "stock" },
   "WMT":    { mt5: "WMT_CFD.US",    type: "stock" },
   "JNJ":    { mt5: "JNJ_CFD.US",    type: "stock" },
   "PFE":    { mt5: "PFE_CFD.US",    type: "stock" },
-  "UNH":    { mt5: "UNH_CFD.US",    type: "stock" },
   "XOM":    { mt5: "XOM_CFD.US",    type: "stock" },
-  "CVX":    { mt5: "CVX_CFD.US",    type: "stock" },
   "DIS":    { mt5: "DIS_CFD.US",    type: "stock" },
   "UBER":   { mt5: "UBER_CFD.US",   type: "stock" },
   "COIN":   { mt5: "COIN_CFD.US",   type: "stock" },
-  "RBLX":   { mt5: "RBLX_CFD.US",   type: "stock" },
   "RIVN":   { mt5: "RIVN_CFD.US",   type: "stock" },
   "NIO":    { mt5: "NIO_CFD.US",    type: "stock" },
   "BABA":   { mt5: "BABA_CFD.US",   type: "stock" },
-  "SPCE":   { mt5: "SPCE_CFD.US",   type: "stock" },
   "GME":    { mt5: "GME_CFD.US",    type: "stock" },
-  "AMC":    { mt5: "AMC_CFD.US",    type: "stock" },
 
-  // ── BELGISCHE STOCKS (_CFD.BE) ────────────────────────────────
+  // ── BELGIAN STOCKS (_CFD.BE) ──────────────────────────────────
   "AGS":    { mt5: "AGS_CFD.BE",    type: "stock" },
   "ABI":    { mt5: "ABI_CFD.BE",    type: "stock" },
   "KBC":    { mt5: "KBC_CFD.BE",    type: "stock" },
@@ -111,14 +116,7 @@ const SYMBOL_MAP = {
   "GBLB":   { mt5: "GBLB_CFD.BE",   type: "stock" },
   "ACKB":   { mt5: "ACKB_CFD.BE",   type: "stock" },
   "PROXB":  { mt5: "PROXB_CFD.BE",  type: "stock" },
-  "COLR":   { mt5: "COLR_CFD.BE",   type: "stock" },
-  "BEFB":   { mt5: "BEFB_CFD.BE",   type: "stock" },
-  "SOFB":   { mt5: "SOFB_CFD.BE",   type: "stock" },
   "ARGX":   { mt5: "ARGX_CFD.BE",   type: "stock" },
-  "BPOST":  { mt5: "BPOST_CFD.BE",  type: "stock" },
-  "TINC":   { mt5: "TINC_CFD.BE",   type: "stock" },
-  "MELB":   { mt5: "MELB_CFD.BE",   type: "stock" },
-  "UMICORE":{ mt5: "UMI_CFD.BE",    type: "stock" },
   "UMI":    { mt5: "UMI_CFD.BE",    type: "stock" },
 
   // ── UK STOCKS (_CFD.UK) ───────────────────────────────────────
@@ -131,36 +129,18 @@ const SYMBOL_MAP = {
   "GSK":    { mt5: "GSK_CFD.UK",    type: "stock" },
   "AZN":    { mt5: "AZN_CFD.UK",    type: "stock" },
   "RIO":    { mt5: "RIO_CFD.UK",    type: "stock" },
-  "GLEN":   { mt5: "GLEN_CFD.UK",   type: "stock" },
-  "LSEG":   { mt5: "LSEG_CFD.UK",   type: "stock" },
-  "REL":    { mt5: "REL_CFD.UK",    type: "stock" },
-  "ULVR":   { mt5: "ULVR_CFD.UK",   type: "stock" },
-  "DGE":    { mt5: "DGE_CFD.UK",    type: "stock" },
-  "RKT":    { mt5: "RKT_CFD.UK",    type: "stock" },
-  "IAG":    { mt5: "IAG_CFD.UK",    type: "stock" },
-  "EZJ":    { mt5: "EZJ_CFD.UK",    type: "stock" },
-  "BT":     { mt5: "BT_CFD.UK",     type: "stock" },
 
-  // ── DUITSE STOCKS (_CFD.DE) ───────────────────────────────────
+  // ── GERMAN STOCKS (_CFD.DE) ───────────────────────────────────
   "SAP":    { mt5: "SAP_CFD.DE",    type: "stock" },
   "SIE":    { mt5: "SIE_CFD.DE",    type: "stock" },
   "ALV":    { mt5: "ALV_CFD.DE",    type: "stock" },
   "BMW":    { mt5: "BMW_CFD.DE",    type: "stock" },
   "MBG":    { mt5: "MBG_CFD.DE",    type: "stock" },
-  "VOW3":   { mt5: "VOW3_CFD.DE",   type: "stock" },
-  "BAS":    { mt5: "BAS_CFD.DE",    type: "stock" },
   "BAYN":   { mt5: "BAYN_CFD.DE",   type: "stock" },
-  "MRK":    { mt5: "MRK_CFD.DE",    type: "stock" },
   "DBK":    { mt5: "DBK_CFD.DE",    type: "stock" },
   "DTE":    { mt5: "DTE_CFD.DE",    type: "stock" },
   "ADS":    { mt5: "ADS_CFD.DE",    type: "stock" },
   "IFX":    { mt5: "IFX_CFD.DE",    type: "stock" },
-  "ENR":    { mt5: "ENR_CFD.DE",    type: "stock" },
-  "RWE":    { mt5: "RWE_CFD.DE",    type: "stock" },
-  "HNR1":   { mt5: "HNR1_CFD.DE",   type: "stock" },
-  "HEI":    { mt5: "HEI_CFD.DE",    type: "stock" },
-  "CON":    { mt5: "CON_CFD.DE",    type: "stock" },
-  "LIN":    { mt5: "LIN_CFD.DE",    type: "stock" },
 };
 
 // ── LOT VALUE PER PUNT PER LOT (EUR) ─────────────────────────
