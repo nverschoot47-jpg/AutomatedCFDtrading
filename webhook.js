@@ -230,12 +230,21 @@ function calcLots(symbol, entry, sl) {
   const maxLots  = MAX_LOTS[type]  || 100.0;
 
   const slDistance = Math.abs(entry - sl);
-  if (slDistance <= 0) return 0.01;
+  if (slDistance <= 0) return type === "stock" ? 1 : 0.01;
 
   let lots = RISK_EUR / (slDistance * lotValue);
-  lots = Math.round(lots * 100) / 100;
-  lots = Math.max(0.01, lots);
-  lots = Math.min(maxLots, lots);
+
+  if (type === "stock") {
+    // Stocks: MT5 vereist gehele getallen (1, 2, 3 shares)
+    lots = Math.floor(lots); // afronden naar beneden = nooit meer risico dan €25
+    lots = Math.max(1, lots); // minimum 1 share
+    lots = Math.min(maxLots, lots);
+  } else {
+    // CFDs/indices/metalen: 2 decimalen
+    lots = Math.round(lots * 100) / 100;
+    lots = Math.max(0.01, lots);
+    lots = Math.min(maxLots, lots);
+  }
   return lots;
 }
 
