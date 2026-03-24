@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v9
+// TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v10
 // Account: 62670737  |  Demo €50.000  |  Risico: €25/trade (max €45)
 // ─────────────────────────────────────────────────────────────
 // NIEUW in v9:
@@ -10,6 +10,14 @@
 //  ✅ Max risk relaxed to €45 if lot too small to grab the trade
 //  ✅ Same pair + same direction = half risk (anti-consolidation failsafe)
 //  ✅ Gold futures chart on TradingView not connected → symbol remapped
+// ─────────────────────────────────────────────────────────────
+// NIEUW in v10:
+//  ✅ Max Profit Tracker — peak price + max € reached per open trade
+//  ✅ What-If RR Analysis — 2:1 / 3:1 / 4:1 scenarios on close
+//  ✅ Real-Time Position Monitor — MetaApi sync every 30s
+//  ✅ Account Equity Curve — snapshot balance/equity/float every 30s
+//  ✅ Closed Trade Analysis  GET /analysis/closed
+//  ✅ New endpoints: /live/positions  /analysis/equity-curve  /trades/:symbol  /history
 // ═══════════════════════════════════════════════════════════════
 
 const express = require("express");
@@ -28,6 +36,26 @@ const RISK_EUR_MAX    = 45;       // max €45 if lot granularity forces it
 // ── OPEN TRADE TRACKER (anti-consolidation) ───────────────────
 // key: "SYMBOL_direction" → count of open trades in that direction
 const openTradeTracker = {};
+
+// ── v10: IN-MEMORY STORES ─────────────────────────────────────
+// open_positions: positionId → trade record (max price updated by poller)
+const openPositions = {};
+
+// closed_trades: array of archived trades with what-if RR analysis
+const closedTrades = [];
+
+// account_snapshots: rolling 30-day equity curve (max ~87k entries @ 30s)
+const accountSnapshots = [];
+const MAX_SNAPSHOTS = 86400; // 30 days worth at 30s interval
+
+// webhook_history: last 200 webhook calls (in/out log)
+const webhookHistory = [];
+const MAX_HISTORY = 200;
+
+function addWebhookHistory(entry) {
+  webhookHistory.unshift({ ts: new Date().toISOString(), ...entry });
+  if (webhookHistory.length > MAX_HISTORY) webhookHistory.length = MAX_HISTORY;
+}
 
 // ── LEARNED PATCHES (self-healing) ───────────────────────────
 // Persisted in memory; logs teach us what needs fixing.
@@ -496,12 +524,139 @@ function learnFromError(symbol, errorCode, errorMessage, requestBody) {
   console.log("🔧 Huidige patches:", JSON.stringify(learnedPatches));
 }
 
+// ── v10: WHAT-IF RR CALCULATOR ────────────────────────────────
+// Returns { "2:1": €xx, "3:1": €xx, "4:1": €xx } and whether maxPrice hit each TP
+function calcWhatIfRR(trade) {
+  const { direction, entry, sl, lots, maxPrice, symbol } = trade;
+  const slDist    = Math.abs(entry - sl);
+  const type      = getSymbolType(symbol);
+  const lotValue  = LOT_VALUE[type] || 1.0;
+  const riskPerLot = slDist * lotValue;
+
+  const results = {};
+  for (const rr of [2, 3, 4]) {
+    const tpDist  = slDist * rr;
+    const tp      = direction === "buy" ? entry + tpDist : entry - tpDist;
+    const potential = lots * tpDist * lotValue;
+    const wouldHit  = direction === "buy"
+      ? maxPrice >= tp
+      : maxPrice <= tp;
+    results[`${rr}:1`] = {
+      tp:        parseFloat(tp.toFixed(5)),
+      potential: parseFloat(potential.toFixed(2)),
+      wouldHit,
+    };
+  }
+  return results;
+}
+
+// ── v10: METAAPI HELPERS ──────────────────────────────────────
+const META_BASE = `https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/${META_ACCOUNT_ID}`;
+
+async function fetchOpenPositions() {
+  const res = await fetch(`${META_BASE}/positions`, {
+    headers: { "auth-token": META_API_TOKEN }
+  });
+  if (!res.ok) throw new Error(`MetaApi positions ${res.status}`);
+  return res.json();
+}
+
+async function fetchAccountInfo() {
+  const res = await fetch(`${META_BASE}/accountInformation`, {
+    headers: { "auth-token": META_API_TOKEN }
+  });
+  if (!res.ok) throw new Error(`MetaApi accountInfo ${res.status}`);
+  return res.json();
+}
+
+// ── v10: POSITION SYNC LOOP ───────────────────────────────────
+// Runs every 30 s — updates max price, detects closures, snapshots equity
+async function syncPositions() {
+  try {
+    // 1) Fetch live positions from MetaApi
+    const livePositions = await fetchOpenPositions();
+    const liveIds = new Set((livePositions || []).map(p => String(p.id)));
+
+    // 2) Update max price / max profit for each open position we track
+    for (const pos of (livePositions || [])) {
+      const id = String(pos.id);
+      if (!openPositions[id]) continue; // not opened via this server
+
+      const cur   = pos.currentPrice ?? pos.openPrice ?? 0;
+      const trade = openPositions[id];
+      const type  = getSymbolType(trade.symbol);
+      const lotV  = LOT_VALUE[type] || 1.0;
+
+      const unrealisedPnL = trade.direction === "buy"
+        ? (cur - trade.entry) * trade.lots * lotV
+        : (trade.entry - cur) * trade.lots * lotV;
+
+      // Track peak in favourable direction
+      const isBetter = trade.direction === "buy"
+        ? cur > (trade.maxPrice ?? trade.entry)
+        : cur < (trade.maxPrice ?? trade.entry);
+
+      if (isBetter) {
+        trade.maxPrice  = cur;
+        trade.maxProfit = parseFloat(unrealisedPnL.toFixed(2));
+      }
+      trade.currentPrice    = cur;
+      trade.currentPnL      = parseFloat(unrealisedPnL.toFixed(2));
+      trade.lastSync        = new Date().toISOString();
+    }
+
+    // 3) Detect positions that closed since last sync
+    for (const [id, trade] of Object.entries(openPositions)) {
+      if (!liveIds.has(id)) {
+        // Position gone — archive it
+        const rr = calcWhatIfRR(trade);
+        const closed = {
+          ...trade,
+          closedAt:   new Date().toISOString(),
+          whatIfRR:   rr,
+        };
+        closedTrades.push(closed);
+        // Clean up tracker
+        if (trade.symbol && trade.direction) {
+          decrementTradeTracker(trade.symbol, trade.direction);
+        }
+        delete openPositions[id];
+        console.log(`📦 Positie ${id} (${trade.symbol}) gearchiveerd | maxProfit: €${trade.maxProfit ?? 0}`);
+      }
+    }
+
+    // 4) Snapshot equity curve
+    try {
+      const info = await fetchAccountInfo();
+      const snap = {
+        ts:         new Date().toISOString(),
+        balance:    info.balance    ?? null,
+        equity:     info.equity     ?? null,
+        floatingPL: info.margin     !== undefined
+          ? parseFloat(((info.equity ?? 0) - (info.balance ?? 0)).toFixed(2))
+          : null,
+        margin:     info.margin     ?? null,
+        freeMargin: info.freeMargin ?? null,
+      };
+      accountSnapshots.push(snap);
+      if (accountSnapshots.length > MAX_SNAPSHOTS) accountSnapshots.shift();
+    } catch (e) {
+      console.warn("⚠️ Equity snapshot mislukt:", e.message);
+    }
+
+  } catch (e) {
+    console.warn("⚠️ syncPositions fout:", e.message);
+  }
+}
+setInterval(syncPositions, 30 * 1000);
+
 // ── WEBHOOK ENDPOINT ──────────────────────────────────────────
 // TradingView alert format:
 // {"action":"buy","symbol":"XAUUSD","entry":{{close}},"sl":{{low}}}
 app.post("/webhook", async (req, res) => {
   try {
     console.log("📨 Webhook ontvangen:", JSON.stringify(req.body));
+    addWebhookHistory({ type: "RECEIVED", body: req.body });
 
     const secret = req.query.secret || req.headers["x-secret"];
     if (secret !== WEBHOOK_SECRET) {
@@ -589,7 +744,25 @@ app.post("/webhook", async (req, res) => {
     // ── SUCCESS ──────────────────────────────────────────────────
     incrementTradeTracker(symbol, direction);
 
-    res.json({
+    // v10: Register position for max-profit tracking
+    const posId = String(result?.positionId || result?.orderId || Date.now());
+    openPositions[posId] = {
+      id:          posId,
+      symbol,
+      mt5Symbol,
+      direction,
+      entry:       entryNum,
+      sl:          slPrice,
+      lots,
+      riskEUR:     effectiveRisk,
+      openedAt:    new Date().toISOString(),
+      maxPrice:    entryNum,   // starts at entry, updated by sync loop
+      maxProfit:   0,
+      currentPnL:  0,
+      lastSync:    null,
+    };
+
+    const responseBody = {
       status:       "OK",
       direction,
       mt5Symbol,
@@ -600,9 +773,12 @@ app.post("/webhook", async (req, res) => {
       risicoEUR:    effectiveRisk.toFixed(2),
       maxRisicoEUR: RISK_EUR_MAX,
       tradeNummer:  (openTradeTracker[`${symbol}_${direction}`] || 1),
+      positionId:   posId,
       metaApi:      result,
       learnedPatches: Object.keys(learnedPatches).length ? learnedPatches : undefined,
-    });
+    };
+    addWebhookHistory({ type: "SUCCESS", symbol, direction, lots, posId });
+    res.json(responseBody);
 
   } catch (err) {
     console.error("❌ Fout:", err.message);
@@ -642,7 +818,7 @@ app.get("/status", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status:    "online",
-    versie:    "v9",
+    versie:    "v10",
     risicoEUR: RISK_EUR_BASE,
     maxRisico: RISK_EUR_MAX,
     symbols:   Object.keys(SYMBOL_MAP),
@@ -654,11 +830,128 @@ app.get("/", (req, res) => {
       "anti-consolidation risk halving",
       "gold futures remap",
       "max risk €45 fallback",
+      "max profit tracker (30s sync)",
+      "what-if 2:1/3:1/4:1 RR analysis",
+      "account equity curve (30s snapshots)",
+      "closed trade archiving",
     ],
+    endpoints: {
+      "POST /webhook":                   "TradingView alert → MT5 order",
+      "POST /close":                     "Manual position close",
+      "GET  /status":                    "Open trade tracker + learned patches",
+      "GET  /live/positions":            "Open positions with max price/profit",
+      "GET  /analysis/closed":           "Closed trades + what-if RR (opt: ?symbol=GOLD)",
+      "GET  /analysis/equity-curve":     "Equity history (opt: ?hours=24)",
+      "GET  /trades/:symbol":            "All closed trades for one symbol",
+      "GET  /history":                   "Webhook call log (opt: ?limit=50)",
+    },
+    tracking: {
+      openPositions:    Object.keys(openPositions).length,
+      closedTrades:     closedTrades.length,
+      equitySnapshots:  accountSnapshots.length,
+      webhookHistory:   webhookHistory.length,
+    },
   });
+});
+
+// ── v10: LIVE POSITIONS ───────────────────────────────────────
+// GET /live/positions  — all open positions with max price/profit
+app.get("/live/positions", (req, res) => {
+  const positions = Object.values(openPositions).map(p => ({
+    id:           p.id,
+    symbol:       p.symbol,
+    direction:    p.direction,
+    entry:        p.entry,
+    sl:           p.sl,
+    lots:         p.lots,
+    riskEUR:      p.riskEUR,
+    openedAt:     p.openedAt,
+    currentPrice: p.currentPrice ?? null,
+    currentPnL:   p.currentPnL  ?? 0,
+    maxPrice:     p.maxPrice,
+    maxProfit:    p.maxProfit,
+    lastSync:     p.lastSync,
+  }));
+  res.json({ count: positions.length, positions });
+});
+
+// ── v10: CLOSED TRADE ANALYSIS ────────────────────────────────
+// GET /analysis/closed?symbol=GOLD  — what-if RR per symbol
+app.get("/analysis/closed", (req, res) => {
+  const { symbol } = req.query;
+  const trades = symbol
+    ? closedTrades.filter(t => t.symbol?.toUpperCase() === symbol.toUpperCase())
+    : closedTrades;
+
+  // Group by symbol
+  const bySymbol = {};
+  for (const t of trades) {
+    const s = t.symbol || "UNKNOWN";
+    if (!bySymbol[s]) bySymbol[s] = { trades: [], totalActual: 0, totalMaxReached: 0 };
+    const g = bySymbol[s];
+    g.trades.push({
+      id:         t.id,
+      direction:  t.direction,
+      openedAt:   t.openedAt,
+      closedAt:   t.closedAt,
+      entry:      t.entry,
+      maxPrice:   t.maxPrice,
+      maxProfit:  t.maxProfit,
+      whatIfRR:   t.whatIfRR,
+    });
+    g.totalActual    += t.maxProfit ?? 0;  // best P/L actually achieved while open
+    g.totalMaxReached += t.maxProfit ?? 0;
+  }
+
+  // Summary per symbol
+  const summary = Object.entries(bySymbol).map(([sym, g]) => {
+    const rrSummary = {};
+    for (const rr of ["2:1", "3:1", "4:1"]) {
+      const possible  = g.trades.filter(t => t.whatIfRR?.[rr]?.wouldHit).length;
+      const totalPot  = g.trades.reduce((sum, t) => sum + (t.whatIfRR?.[rr]?.potential ?? 0), 0);
+      rrSummary[rr] = {
+        wouldHave: possible,
+        totalPotential: parseFloat(totalPot.toFixed(2)),
+        missed:    parseFloat((totalPot - g.totalActual).toFixed(2)),
+      };
+    }
+    return {
+      symbol:       sym,
+      tradeCount:   g.trades.length,
+      avgMaxProfit: parseFloat((g.totalActual / (g.trades.length || 1)).toFixed(2)),
+      whatIfRR:     rrSummary,
+      trades:       g.trades,
+    };
+  });
+
+  res.json({ total: trades.length, bySymbol: summary });
+});
+
+// ── v10: EQUITY CURVE ─────────────────────────────────────────
+// GET /analysis/equity-curve?hours=24
+app.get("/analysis/equity-curve", (req, res) => {
+  const hours  = parseInt(req.query.hours) || 24;
+  const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const snaps  = accountSnapshots.filter(s => s.ts >= cutoff);
+  res.json({ hours, count: snaps.length, snapshots: snaps });
+});
+
+// ── v10: TRADES BY SYMBOL ─────────────────────────────────────
+// GET /trades/:symbol  — all closed trades for one symbol
+app.get("/trades/:symbol", (req, res) => {
+  const sym    = req.params.symbol.toUpperCase();
+  const trades = closedTrades.filter(t => t.symbol?.toUpperCase() === sym);
+  res.json({ symbol: sym, count: trades.length, trades });
+});
+
+// ── v10: WEBHOOK HISTORY ──────────────────────────────────────
+// GET /history?limit=50
+app.get("/history", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, MAX_HISTORY);
+  res.json({ count: webhookHistory.length, history: webhookHistory.slice(0, limit) });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
-  console.log(`🚀 Webhook server v9 op poort ${PORT} | Basis risico: €${RISK_EUR_BASE} | Max risico: €${RISK_EUR_MAX}/trade`)
+  console.log(`🚀 Webhook server v10 op poort ${PORT} | Basis risico: €${RISK_EUR_BASE} | Max risico: €${RISK_EUR_MAX}/trade | Sync: 30s`)
 );
