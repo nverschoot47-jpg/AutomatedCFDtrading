@@ -2,7 +2,7 @@
 // TradingView → MetaApi → MT5 TMS  |  Railway Webhook Server v9
 // Account: 62670737  |  Demo €50.000  |  Risico: €25/trade (max €45)
 // ─────────────────────────────────────────────────────────────
-// FEATURES in v9:
+// NIEUW in v9:
 //  ✅ Self-healing error learning (patches symbol/lot errors live)
 //  ✅ Market hours guard (stocks only 15:30–21:00 CET, no weekend)
 //  ✅ Crypto trades 24/7 including weekend
@@ -10,14 +10,9 @@
 //  ✅ Max risk relaxed to €45 if lot too small to grab the trade
 //  ✅ Same pair + same direction = half risk (anti-consolidation failsafe)
 //  ✅ Gold futures chart on TradingView not connected → symbol remapped
-//  ✅ MAX PROFIT TRACKER + WHAT-IF ANALYSIS (NEW!)
-//  ✅ Real-time position monitoring every 30 sec (NEW!)
-//  ✅ Account equity curve & snapshots (NEW!)
-//  ✅ Closed trade analysis with RR scenarios (NEW!)
 // ═══════════════════════════════════════════════════════════════
 
 const express = require("express");
-const sqlite3 = require("sqlite3").verbose();
 const app = express();
 app.use(express.json());
 
@@ -30,89 +25,14 @@ const RISK_PERCENT    = 0.0005;   // 0.05% = €25/trade base
 const RISK_EUR_BASE   = ACCOUNT_BALANCE * RISK_PERCENT;  // €25
 const RISK_EUR_MAX    = 45;       // max €45 if lot granularity forces it
 
-// ── DATABASE SETUP ────────────────────────────────────────────
-const db = new sqlite3.Database("trades.db");
-
-// Initialize tables
-db.serialize(() => {
-  // Open positions tracker
-  db.run(`
-    CREATE TABLE IF NOT EXISTS open_positions (
-      positionId TEXT PRIMARY KEY,
-      symbol TEXT,
-      direction TEXT,
-      openPrice REAL,
-      volume REAL,
-      openTime TEXT,
-      maxPrice REAL,
-      maxProfit REAL,
-      maxProfitAt TEXT,
-      lastUpdated TEXT,
-      lastPrice REAL,
-      lastProfit REAL
-    )
-  `);
-
-  // Closed trades with what-if analysis
-  db.run(`
-    CREATE TABLE IF NOT EXISTS closed_trades (
-      positionId TEXT PRIMARY KEY,
-      symbol TEXT,
-      direction TEXT,
-      openPrice REAL,
-      closePrice REAL,
-      stopLoss REAL,
-      volume REAL,
-      openTime TEXT,
-      closeTime TEXT,
-      maxPrice REAL,
-      maxProfitEUR REAL,
-      actualClosingEUR REAL,
-      missedProfitEUR REAL,
-      slDistance REAL,
-      whatIfRR2 REAL,
-      whatIfRR3 REAL,
-      whatIfRR4 REAL,
-      history TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Account equity curve
-  db.run(`
-    CREATE TABLE IF NOT EXISTS account_snapshots (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT,
-      balance REAL,
-      equity REAL,
-      floating_profit REAL,
-      open_position_count INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Webhook history
-  db.run(`
-    CREATE TABLE IF NOT EXISTS webhook_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT,
-      action TEXT,
-      symbol TEXT,
-      entry REAL,
-      sl REAL,
-      status TEXT,
-      response TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-});
-
 // ── OPEN TRADE TRACKER (anti-consolidation) ───────────────────
+// key: "SYMBOL_direction" → count of open trades in that direction
 const openTradeTracker = {};
 
 // ── LEARNED PATCHES (self-healing) ───────────────────────────
+// Persisted in memory; logs teach us what needs fixing.
+// Structure: { "SYMBOL": { mt5Override: "X", lotStepOverride: 0.01, ... } }
 const learnedPatches = {};
-
 
 // ── SYMBOL MAP ────────────────────────────────────────────────
 const SYMBOL_MAP = {
@@ -147,7 +67,9 @@ const SYMBOL_MAP = {
   "AU200":      { mt5: "AU200.pro",  type: "index" },
   "ASX200":     { mt5: "AU200.pro",  type: "index" },
 
-  // ── METALS ─────────────────────────────────��─────────────────
+  // ── METALS ───────────────────────────────────────────────────
+  // Gold: TradingView futures tickers (GOLD, GC1!, XAUUSD, GCJ2025 etc.)
+  // ALL map to GOLD.pro on MT5 — futures chart ≠ live feed, remapped here
   "XAUUSD":     { mt5: "GOLD.pro",   type: "gold" },
   "GOLD":       { mt5: "GOLD.pro",   type: "gold" },
   "GC1!":       { mt5: "GOLD.pro",   type: "gold" },
@@ -241,3 +163,502 @@ const SYMBOL_MAP = {
   "ADS":   { mt5: "ADS_CFD.DE",   type: "stock" },
   "IFX":   { mt5: "IFX_CFD.DE",   type: "stock" },
 };
+
+// ── LOT VALUE PER PUNT PER LOT (EUR) ─────────────────────────
+const LOT_VALUE = {
+  "index":  25.00,
+  "gold":    0.87,
+  "silver": 43.42,
+  "natgas":  8.60,
+  "brent":  87.27,
+  "crypto":  0.92,
+  "stock":   1.00,
+};
+
+// ── MIN STOP DISTANCE ─────────────────────────────────────────
+const MIN_STOP = {
+  "DE30.pro":    5.0,
+  "EU50.pro":    3.0,
+  "FR40.pro":    3.0,
+  "GB100.pro":   5.0,
+  "US100.pro":   5.0,
+  "US30.pro":    5.0,
+  "US500.pro":   2.0,
+  "JP225.pro":  10.0,
+  "AU200.pro":   3.0,
+  "GOLD.pro":    0.5,
+  "SILVER.pro":  0.05,
+  "NATGAS.pro":  0.02,
+  "OILBRNT.pro": 0.05,
+  "BTCUSD":     50.0,
+  "default_stock": 0.01,
+};
+
+// ── MAX LOTS ──────────────────────────────────────────────────
+const MAX_LOTS = {
+  "index":  2.0,
+  "gold":   5.0,
+  "silver": 5.0,
+  "natgas": 5.0,
+  "brent":  2.0,
+  "crypto": 0.1,
+  "stock": 100.0,
+};
+
+// ── CRYPTO PREFIXES ───────────────────────────────────────────
+const CRYPTO_PREFIXES = ["BTC","ETH","XRP","LTC","BCH","ADA","DOT","SOL"];
+
+function getMT5Symbol(symbol) {
+  // Check learned patches first (self-healing)
+  if (learnedPatches[symbol]?.mt5Override) return learnedPatches[symbol].mt5Override;
+  if (SYMBOL_MAP[symbol]) return SYMBOL_MAP[symbol].mt5;
+  // Gold futures fallback: GCM2025, GCJ25 etc. → GOLD.pro
+  if (/^GC[A-Z]\d+/.test(symbol)) return "GOLD.pro";
+  if (CRYPTO_PREFIXES.some(c => symbol.startsWith(c))) return symbol;
+  return `${symbol}_CFD.US`;
+}
+
+function getSymbolType(symbol) {
+  if (SYMBOL_MAP[symbol]) return SYMBOL_MAP[symbol].type;
+  if (/^GC[A-Z]\d+/.test(symbol)) return "gold";
+  if (CRYPTO_PREFIXES.some(c => symbol.startsWith(c))) return "crypto";
+  return "stock";
+}
+
+// ── MARKET HOURS (CET) ────────────────────────────────────────
+// Stocks: Mon–Fri 15:30–21:00 CET
+// Indices/metals/commodities: Mon 01:00 – Fri 23:00 CET
+// Crypto: always open
+function isCETMarketOpen(type) {
+  const now = new Date();
+  // Convert to CET (UTC+1 / UTC+2 in DST)
+  // Using UTC offset: CET = UTC+1, CEST = UTC+2
+  // Simple DST: last Sun Mar → last Sun Oct
+  const month = now.getUTCMonth() + 1; // 1-12
+  const dst = (month > 3 && month < 10) ||
+    (month === 3 && now.getUTCDate() >= 25) ||
+    (month === 10 && now.getUTCDate() < 25);
+  const cetOffset = dst ? 2 : 1;
+  const cetTime = new Date(now.getTime() + cetOffset * 3600 * 1000);
+
+  const dayOfWeek = cetTime.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+  const hour      = cetTime.getUTCHours();
+  const minute    = cetTime.getUTCMinutes();
+  const timeHHMM  = hour * 100 + minute;
+
+  if (type === "crypto") return true; // 24/7
+
+  // Weekend: Sat(6) full day closed, Sun(0) before 01:00 CET closed
+  if (dayOfWeek === 6) return false;
+  if (dayOfWeek === 0 && timeHHMM < 100) return false;
+
+  if (type === "stock") {
+    // Mon-Fri only, 15:30–21:00 CET
+    if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+    return timeHHMM >= 1530 && timeHHMM < 2100;
+  }
+
+  // Indices, metals, commodities: Mon–Fri with broad hours
+  // Close ~23:00 Fri, reopen ~01:00 Mon
+  if (dayOfWeek === 5 && timeHHMM >= 2300) return false; // Fri night close
+  return true;
+}
+
+// ── FRIDAY AUTO-CLOSE CHECKER ────────────────────────────────
+// Called every minute — closes stock positions at 20:50 CET Friday
+async function checkFridayClose() {
+  const now = new Date();
+  const month = now.getUTCMonth() + 1;
+  const dst = (month > 3 && month < 10) ||
+    (month === 3 && now.getUTCDate() >= 25) ||
+    (month === 10 && now.getUTCDate() < 25);
+  const cetOffset = dst ? 2 : 1;
+  const cetTime = new Date(now.getTime() + cetOffset * 3600 * 1000);
+  const dayOfWeek = cetTime.getUTCDay();
+  const hour = cetTime.getUTCHours();
+  const minute = cetTime.getUTCMinutes();
+
+  if (dayOfWeek === 5 && hour === 20 && minute === 50) {
+    console.log("🔔 Vrijdag 20:50 CET — sluit alle stock posities...");
+    try {
+      await closeAllPositionsByType("stock");
+    } catch (e) {
+      console.error("❌ Fout bij automatisch sluiten:", e.message);
+    }
+  }
+}
+setInterval(checkFridayClose, 60 * 1000);
+
+// ── CLOSE ALL POSITIONS BY TYPE ───────────────────────────────
+async function closeAllPositionsByType(type) {
+  const url = `https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/${META_ACCOUNT_ID}/positions`;
+  const res = await fetch(url, {
+    headers: { "auth-token": META_API_TOKEN }
+  });
+  const positions = await res.json();
+  if (!Array.isArray(positions)) return;
+
+  for (const pos of positions) {
+    const sym = pos.symbol || "";
+    // Determine if it's a stock by checking suffix or SYMBOL_MAP
+    const isStock = sym.includes("_CFD.") ||
+      Object.values(SYMBOL_MAP).some(s => s.mt5 === sym && s.type === "stock");
+    if (!isStock) continue;
+
+    await closePosition(pos.id);
+    // Clean tracker
+    const key = `${sym}_buy`;
+    const key2 = `${sym}_sell`;
+    delete openTradeTracker[key];
+    delete openTradeTracker[key2];
+  }
+}
+
+// ── CLOSE SINGLE POSITION ─────────────────────────────────────
+async function closePosition(positionId) {
+  const url = `https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/${META_ACCOUNT_ID}/positions/${positionId}/close`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "auth-token": META_API_TOKEN,
+    },
+  });
+  const data = await res.json();
+  console.log(`🔒 Positie ${positionId} gesloten:`, JSON.stringify(data));
+  return data;
+}
+
+// ── ANTI-CONSOLIDATION RISK HALVING ──────────────────────────
+// Same symbol + same direction → halve risk each extra entry
+function getEffectiveRisk(symbol, direction) {
+  const key = `${symbol}_${direction}`;
+  const count = openTradeTracker[key] || 0;
+  // risk halves for each existing trade: 1st=€25, 2nd=€12.50, 3rd=€6.25...
+  const risk = RISK_EUR_BASE / Math.pow(2, count);
+  return Math.max(1, risk); // minimum €1
+}
+
+function incrementTradeTracker(symbol, direction) {
+  const key = `${symbol}_${direction}`;
+  openTradeTracker[key] = (openTradeTracker[key] || 0) + 1;
+}
+
+function decrementTradeTracker(symbol, direction) {
+  const key = `${symbol}_${direction}`;
+  if (openTradeTracker[key] > 0) openTradeTracker[key]--;
+}
+
+// ── LOT SIZE CALCULATION ──────────────────────────────────────
+// Tries base risk, bumps up to max risk (€45) if lot step too coarse
+function calcLots(symbol, entry, sl, effectiveRisk) {
+  const type      = getSymbolType(symbol);
+  const lotValue  = LOT_VALUE[type] || 1.0;
+  const maxLots   = MAX_LOTS[type]  || 100.0;
+
+  // Check for learned lot step
+  const lotStep = learnedPatches[symbol]?.lotStepOverride || (type === "stock" ? 1 : 0.01);
+
+  const slDistance = Math.abs(entry - sl);
+  if (slDistance <= 0) return lotStep;
+
+  let lots = effectiveRisk / (slDistance * lotValue);
+
+  if (type === "stock") {
+    lots = Math.floor(lots);
+    if (lots < 1) {
+      // Can we fit within max risk (€45)?
+      const riskWith1Lot = 1 * slDistance * lotValue;
+      if (riskWith1Lot <= RISK_EUR_MAX) {
+        console.log(`⬆️ Lot te klein (<1 share) maar 1 share = €${riskWith1Lot.toFixed(2)} ≤ €${RISK_EUR_MAX} — doorgaan`);
+        lots = 1;
+      } else {
+        console.warn(`❌ 1 share = €${riskWith1Lot.toFixed(2)} > €${RISK_EUR_MAX} — trade geannuleerd`);
+        return null;
+      }
+    }
+    lots = Math.min(maxLots, lots);
+  } else {
+    // Round to lot step
+    lots = Math.round(lots / lotStep) * lotStep;
+    lots = parseFloat(lots.toFixed(2));
+
+    if (lots < lotStep) {
+      // Can we fit one step within max risk?
+      const riskWithMinLot = lotStep * slDistance * lotValue;
+      if (riskWithMinLot <= RISK_EUR_MAX) {
+        console.log(`⬆️ Lots < min step ${lotStep} maar min step = €${riskWithMinLot.toFixed(2)} ≤ €${RISK_EUR_MAX} — doorgaan`);
+        lots = lotStep;
+      } else {
+        console.warn(`❌ Min lot = €${riskWithMinLot.toFixed(2)} > €${RISK_EUR_MAX} — trade geannuleerd`);
+        return null;
+      }
+    }
+    lots = Math.min(maxLots, lots);
+  }
+
+  const actualRisk = lots * slDistance * lotValue;
+  console.log(`💶 Risico check: ${lots} lots × ${slDistance.toFixed(4)} pts × €${lotValue} = €${actualRisk.toFixed(2)}`);
+
+  return lots;
+}
+
+// ── SL VALIDATION ─────────────────────────────────────────────
+function validateSL(direction, entry, sl, mt5Symbol) {
+  const minDist = MIN_STOP[mt5Symbol] || MIN_STOP["default_stock"] || 0.01;
+  const slDist  = Math.abs(entry - sl);
+  if (slDist < minDist) {
+    const adjusted = direction === "buy" ? entry - minDist : entry + minDist;
+    console.warn(`⚠️ SL te dicht (${slDist} < ${minDist}) → aangepast: ${adjusted}`);
+    return adjusted;
+  }
+  return sl;
+}
+
+// ── PLACE ORDER ───────────────────────────────────────────────
+async function placeOrder(direction, symbol, entry, sl, lots) {
+  const mt5Symbol = getMT5Symbol(symbol);
+  const orderType = direction === "buy" ? "ORDER_TYPE_BUY" : "ORDER_TYPE_SELL";
+  const slPrice   = validateSL(direction, parseFloat(entry), parseFloat(sl), mt5Symbol);
+
+  const body = {
+    symbol:     mt5Symbol,
+    volume:     lots,
+    actionType: orderType,
+    stopLoss:   slPrice,
+    comment:    `TV-NV-${direction.toUpperCase()}-${symbol}`,
+  };
+
+  const url = `https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/${META_ACCOUNT_ID}/trade`;
+
+  const res = await fetch(url, {
+    method:  "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "auth-token":   META_API_TOKEN,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const result = await res.json();
+  return { result, mt5Symbol, slPrice, body };
+}
+
+// ── SELF-HEALING ERROR HANDLER ────────────────────────────────
+// Reads MetaApi error codes and patches learnedPatches for next attempt
+function learnFromError(symbol, errorCode, errorMessage, requestBody) {
+  const msg = (errorMessage || "").toLowerCase();
+
+  if (!learnedPatches[symbol]) learnedPatches[symbol] = {};
+
+  // INVALID_SYMBOL → try alternate suffix
+  if (errorCode === "TRADE_RETCODE_INVALID" && msg.includes("symbol")) {
+    const current = getMT5Symbol(symbol);
+    // Cycle through fallback suffixes
+    const fallbacks = [
+      current.replace(".pro", ""),              // remove .pro
+      current.replace("_CFD.US", "_CFD.DE"),    // try DE exchange
+      current.replace("_CFD.US", "_CFD.BE"),    // try BE exchange
+      current.replace("_CFD.US", ""),           // bare symbol
+    ].filter(s => s !== current);
+
+    const alreadyTried = learnedPatches[symbol]._triedMt5 || [];
+    const next = fallbacks.find(f => !alreadyTried.includes(f));
+    if (next) {
+      learnedPatches[symbol].mt5Override = next;
+      learnedPatches[symbol]._triedMt5 = [...alreadyTried, next];
+      console.log(`🧠 LEARN: ${symbol} → probeer MT5 symbol "${next}" volgende keer`);
+    }
+  }
+
+  // INVALID_VOLUME → adjust lot step
+  if (msg.includes("volume") || msg.includes("lot")) {
+    const currentStep = learnedPatches[symbol]?.lotStepOverride || 0.01;
+    const newStep = currentStep * 10; // bump up: 0.01 → 0.1 → 1
+    learnedPatches[symbol].lotStepOverride = newStep;
+    console.log(`🧠 LEARN: ${symbol} lot step aangepast naar ${newStep}`);
+  }
+
+  // INVALID_STOPS → increase min stop
+  if (msg.includes("stop") || errorCode === "TRADE_RETCODE_INVALID_STOPS") {
+    const mt5Sym = getMT5Symbol(symbol);
+    const current = MIN_STOP[mt5Sym] || 0.01;
+    MIN_STOP[mt5Sym] = current * 2;
+    console.log(`🧠 LEARN: Min stop voor ${mt5Sym} verhoogd naar ${MIN_STOP[mt5Sym]}`);
+  }
+
+  // NO_MONEY → risk te hoog, log only (we already cap at €45)
+  if (msg.includes("no money") || msg.includes("insufficient")) {
+    console.warn(`⚠️ LEARN: Onvoldoende marge voor ${symbol} — overgeslagen`);
+  }
+
+  // Log all patches for debugging
+  console.log("🔧 Huidige patches:", JSON.stringify(learnedPatches));
+}
+
+// ── WEBHOOK ENDPOINT ──────────────────────────────────────────
+// TradingView alert format:
+// {"action":"buy","symbol":"XAUUSD","entry":{{close}},"sl":{{low}}}
+app.post("/webhook", async (req, res) => {
+  try {
+    console.log("📨 Webhook ontvangen:", JSON.stringify(req.body));
+
+    const secret = req.query.secret || req.headers["x-secret"];
+    if (secret !== WEBHOOK_SECRET) {
+      console.warn("⚠️ Ongeldige secret");
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { action, symbol, entry, sl } = req.body;
+
+    if (!action || !symbol || !entry || !sl) {
+      return res.status(400).json({ error: "Vereist: action, symbol, entry, sl" });
+    }
+
+    const direction = ["buy","bull","long"].includes(action.toLowerCase()) ? "buy" : "sell";
+    const entryNum  = parseFloat(entry);
+    const slNum     = parseFloat(sl);
+
+    if (isNaN(entryNum) || isNaN(slNum)) {
+      return res.status(400).json({ error: "entry en sl moeten geldig getal zijn" });
+    }
+
+    if (direction === "buy"  && slNum >= entryNum) return res.status(400).json({ error: "SL moet onder entry voor BUY" });
+    if (direction === "sell" && slNum <= entryNum) return res.status(400).json({ error: "SL moet boven entry voor SELL" });
+
+    const symType = getSymbolType(symbol);
+    const mt5Sym  = getMT5Symbol(symbol);
+
+    // ── MARKET HOURS CHECK ──────────────────────────────────────
+    if (!isCETMarketOpen(symType)) {
+      const msg = `🕐 Markt gesloten voor ${symbol} (${symType}) op dit moment — order genegeerd`;
+      console.warn(msg);
+      return res.status(200).json({ status: "SKIP", reason: msg });
+    }
+
+    // ── UNKNOWN SYMBOL WARNING ───────────────────────────────────
+    if (!SYMBOL_MAP[symbol]) {
+      console.warn(`⚠️ Onbekend symbool: ${symbol} → probeer ${mt5Sym}`);
+    }
+
+    // ── ANTI-CONSOLIDATION RISK ──────────────────────────────────
+    const effectiveRisk = getEffectiveRisk(symbol, direction);
+    const tradeCount    = openTradeTracker[`${symbol}_${direction}`] || 0;
+    if (tradeCount > 0) {
+      console.log(`⚖️ Consolidatie guard: ${tradeCount} open ${direction} trades op ${symbol} → risico €${effectiveRisk.toFixed(2)}`);
+    }
+
+    // ── LOT CALCULATION ──────────────────────────────────────────
+    const lots = calcLots(symbol, entryNum, slNum, effectiveRisk);
+    if (lots === null) {
+      return res.status(200).json({ status: "SKIP", reason: "Minimale lot groter dan max risico €45" });
+    }
+
+    const slAfstand = Math.abs(entryNum - slNum).toFixed(4);
+    console.log(`📊 ${direction.toUpperCase()} ${symbol} (${mt5Sym}) [${symType}] | Entry: ${entryNum} | SL: ${slNum} | Afstand: ${slAfstand} | Lots: ${lots} | Risico: €${effectiveRisk.toFixed(2)}`);
+
+    // ── PLACE ORDER (with retry on self-healed error) ─────────────
+    let { result, mt5Symbol, slPrice, body } = await placeOrder(direction, symbol, entryNum, slNum, lots);
+    console.log("📬 Order resultaat:", JSON.stringify(result));
+
+    // Detect error in result
+    const errCode = result?.error?.code || result?.retcode;
+    const errMsg  = result?.error?.message || result?.comment || "";
+    const isError = result?.error || (errCode && errCode !== 10009 && errCode !== "TRADE_RETCODE_DONE");
+
+    if (isError) {
+      console.warn(`⚠️ Order fout (${errCode}): ${errMsg}`);
+      learnFromError(symbol, errCode, errMsg, body);
+
+      // One retry with patched values
+      console.log("🔄 Retry met gecorrigeerde waarden...");
+      const retryLots = calcLots(symbol, entryNum, slNum, effectiveRisk);
+      if (retryLots !== null) {
+        const retry = await placeOrder(direction, symbol, entryNum, slNum, retryLots);
+        result = retry.result;
+        console.log("🔄 Retry resultaat:", JSON.stringify(result));
+
+        const retryErr = result?.error || (result?.retcode && result?.retcode !== 10009 && result?.retcode !== "TRADE_RETCODE_DONE");
+        if (retryErr) {
+          learnFromError(symbol, result?.error?.code || result?.retcode, result?.error?.message || result?.comment, retry.body);
+          return res.status(200).json({ status: "ERROR_LEARNED", note: "Fout gelogd, patch opgeslagen voor volgende keer", errCode, errMsg, learnedPatches });
+        }
+      }
+    }
+
+    // ── SUCCESS ──────────────────────────────────────────────────
+    incrementTradeTracker(symbol, direction);
+
+    res.json({
+      status:       "OK",
+      direction,
+      mt5Symbol,
+      entry:        entryNum,
+      sl:           slPrice,
+      slAfstand,
+      lots,
+      risicoEUR:    effectiveRisk.toFixed(2),
+      maxRisicoEUR: RISK_EUR_MAX,
+      tradeNummer:  (openTradeTracker[`${symbol}_${direction}`] || 1),
+      metaApi:      result,
+      learnedPatches: Object.keys(learnedPatches).length ? learnedPatches : undefined,
+    });
+
+  } catch (err) {
+    console.error("❌ Fout:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── MANUAL CLOSE ENDPOINT ─────────────────────────────────────
+// POST /close?secret=xxx  body: {"positionId":"123"}
+app.post("/close", async (req, res) => {
+  const secret = req.query.secret || req.headers["x-secret"];
+  if (secret !== WEBHOOK_SECRET) return res.status(401).json({ error: "Unauthorized" });
+
+  const { positionId, symbol, direction } = req.body;
+  if (!positionId) return res.status(400).json({ error: "Vereist: positionId" });
+
+  try {
+    const result = await closePosition(positionId);
+    if (symbol && direction) decrementTradeTracker(symbol, direction);
+    res.json({ status: "OK", result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── TRADE TRACKER STATUS ──────────────────────────────────────
+app.get("/status", (req, res) => {
+  res.json({
+    openTrades:     openTradeTracker,
+    learnedPatches,
+    risicoBase:     RISK_EUR_BASE,
+    risicoMax:      RISK_EUR_MAX,
+  });
+});
+
+// ── HEALTH CHECK ─────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({
+    status:    "online",
+    versie:    "v9",
+    risicoEUR: RISK_EUR_BASE,
+    maxRisico: RISK_EUR_MAX,
+    symbols:   Object.keys(SYMBOL_MAP),
+    features: [
+      "self-healing errors",
+      "market hours guard",
+      "friday auto-close stocks",
+      "crypto 24/7",
+      "anti-consolidation risk halving",
+      "gold futures remap",
+      "max risk €45 fallback",
+    ],
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () =>
+  console.log(`🚀 Webhook server v9 op poort ${PORT} | Basis risico: €${RISK_EUR_BASE} | Max risico: €${RISK_EUR_MAX}/trade`)
+);
