@@ -1,15 +1,16 @@
 {
   "name": "nv-tradingview-webhook",
   "version": "1.0.0",
-  "description": "TradingView → MetaApi → MT5 TMS webhook server",
+  "description": "TradingView → MetaApi → MT5 Webhook Server v10",
   "main": "webhook.js",
   "scripts": {
-    "start": "node webhook.js"
+    "start": "node webhook.js",
+    "dev": "node webhook.js"
   },
   "dependencies": {
     "express": "^4.18.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   }
 }
