@@ -571,4 +571,241 @@ setInterval(syncPositions, 30 * 1000);
 app.post("/webhook", async (req, res) => {
   try {
     console.log("📨 Webhook ontvangen:", JSON.stringify(req.body));
-    addWebhookHistory({ type: "RECEIVED
+    addWebhookHistory({ type: "RECEIVED", body: req.body });
+
+    const secret = req.query.secret || req.headers["x-secret"];
+    if (secret !== WEBHOOK_SECRET) {
+      console.warn("⚠️ Ongeldige secret");
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { action, entry, sl } = req.body;
+
+    // ── v11: {{ticker}} vangnet ───────────────────────────────
+    const symbol = (req.body.symbol === "{{ticker}}" || !req.body.symbol)
+      ? null : req.body.symbol;
+
+    if (!symbol) {
+      console.warn("⚠️ Symbool is {{ticker}} of leeg — hermaak de TradingView alert.");
+      return res.status(400).json({
+        error: "Symbool ontbreekt of is letterlijk {{ticker}} — verwijder de alert in TradingView en maak hem opnieuw aan met 'Any alert() function call'."
+      });
+    }
+
+    if (!action || !entry || !sl) {
+      return res.status(400).json({ error: "Vereist: action, symbol, entry, sl" });
+    }
+
+    const direction = ["buy","bull","long"].includes(action.toLowerCase()) ? "buy" : "sell";
+    const entryNum  = parseFloat(entry);
+    const slNum     = parseFloat(sl);
+
+    if (isNaN(entryNum) || isNaN(slNum)) {
+      return res.status(400).json({ error: "entry en sl moeten geldig getal zijn" });
+    }
+
+    if (direction === "buy"  && slNum >= entryNum) return res.status(400).json({ error: "SL moet onder entry voor BUY" });
+    if (direction === "sell" && slNum <= entryNum) return res.status(400).json({ error: "SL moet boven entry voor SELL" });
+
+    const symType = getSymbolType(symbol);
+    const mt5Sym  = getMT5Symbol(symbol);
+
+    if (!isCETMarketOpen(symType)) {
+      const msg = `🕐 Markt gesloten voor ${symbol} (${symType}) — order genegeerd`;
+      console.warn(msg);
+      return res.status(200).json({ status: "SKIP", reason: msg });
+    }
+
+    if (!SYMBOL_MAP[symbol]) {
+      console.warn(`⚠️ Onbekend symbool: ${symbol} → probeer ${mt5Sym}`);
+    }
+
+    const effectiveRisk = getEffectiveRisk(symbol, direction);
+    const tradeCount    = openTradeTracker[`${symbol}_${direction}`] || 0;
+    if (tradeCount > 0) {
+      console.log(`⚖️ Consolidatie guard: ${tradeCount} open ${direction} op ${symbol} → €${effectiveRisk.toFixed(2)}`);
+    }
+
+    const lots = calcLots(symbol, entryNum, slNum, effectiveRisk);
+    if (lots === null) {
+      return res.status(200).json({ status: "SKIP", reason: "Minimale lot groter dan max risico €45" });
+    }
+
+    const slAfstand = Math.abs(entryNum - slNum).toFixed(4);
+    console.log(`📊 ${direction.toUpperCase()} ${symbol} (${mt5Sym}) [${symType}] | Entry: ${entryNum} | SL: ${slNum} | Afstand: ${slAfstand} | Lots: ${lots} | Risico: €${effectiveRisk.toFixed(2)}`);
+
+    let { result, mt5Symbol, slPrice, body } = await placeOrder(direction, symbol, entryNum, slNum, lots);
+    console.log("📬 Order resultaat:", JSON.stringify(result));
+
+    const errCode = result?.error?.code || result?.retcode;
+    const errMsg  = result?.error?.message || result?.comment || "";
+    const isError = result?.error || (errCode && errCode !== 10009 && errCode !== "TRADE_RETCODE_DONE");
+
+    if (isError) {
+      console.warn(`⚠️ Order fout (${errCode}): ${errMsg}`);
+      learnFromError(symbol, errCode, errMsg, body);
+      console.log("🔄 Retry...");
+      const retryLots = calcLots(symbol, entryNum, slNum, effectiveRisk);
+      if (retryLots !== null) {
+        const retry = await placeOrder(direction, symbol, entryNum, slNum, retryLots);
+        result = retry.result;
+        console.log("🔄 Retry resultaat:", JSON.stringify(result));
+        const retryErr = result?.error || (result?.retcode && result?.retcode !== 10009 && result?.retcode !== "TRADE_RETCODE_DONE");
+        if (retryErr) {
+          learnFromError(symbol, result?.error?.code || result?.retcode, result?.error?.message || result?.comment, retry.body);
+          return res.status(200).json({ status: "ERROR_LEARNED", errCode, errMsg, learnedPatches });
+        }
+      }
+    }
+
+    incrementTradeTracker(symbol, direction);
+
+    const posId = String(result?.positionId || result?.orderId || Date.now());
+    openPositions[posId] = {
+      id: posId, symbol, mt5Symbol, direction,
+      entry: entryNum, sl: slPrice, lots,
+      riskEUR:   effectiveRisk,
+      openedAt:  new Date().toISOString(),
+      maxPrice:  entryNum,
+      maxProfit: 0,
+      currentPnL: 0,
+      lastSync:  null,
+    };
+
+    const responseBody = {
+      status: "OK", direction, mt5Symbol,
+      entry: entryNum, sl: slPrice, slAfstand, lots,
+      risicoEUR:    effectiveRisk.toFixed(2),
+      maxRisicoEUR: RISK_EUR_MAX,
+      tradeNummer:  openTradeTracker[`${symbol}_${direction}`] || 1,
+      positionId:   posId,
+      metaApi:      result,
+      learnedPatches: Object.keys(learnedPatches).length ? learnedPatches : undefined,
+    };
+    addWebhookHistory({ type: "SUCCESS", symbol, direction, lots, posId });
+    res.json(responseBody);
+
+  } catch (err) {
+    console.error("❌ Fout:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── MANUAL CLOSE ──────────────────────────────────────────────
+app.post("/close", async (req, res) => {
+  const secret = req.query.secret || req.headers["x-secret"];
+  if (secret !== WEBHOOK_SECRET) return res.status(401).json({ error: "Unauthorized" });
+  const { positionId, symbol, direction } = req.body;
+  if (!positionId) return res.status(400).json({ error: "Vereist: positionId" });
+  try {
+    const result = await closePosition(positionId);
+    if (symbol && direction) decrementTradeTracker(symbol, direction);
+    res.json({ status: "OK", result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── STATUS ────────────────────────────────────────────────────
+app.get("/status", (req, res) => {
+  res.json({ openTrades: openTradeTracker, learnedPatches, risicoBase: RISK_EUR_BASE, risicoMax: RISK_EUR_MAX });
+});
+
+// ── HEALTH CHECK ─────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({
+    status: "online", versie: "v11",
+    risicoEUR: RISK_EUR_BASE, maxRisico: RISK_EUR_MAX,
+    symbols: Object.keys(SYMBOL_MAP),
+    features: [
+      "self-healing errors", "market hours guard",
+      "friday auto-close stocks", "crypto 24/7",
+      "anti-consolidation risk halving", "gold futures remap",
+      "max risk €45 fallback", "max profit tracker (30s sync)",
+      "what-if 2:1/3:1/4:1 RR analysis",
+      "account equity curve (30s snapshots)",
+      "closed trade archiving",
+      "MCL1!/MGC1!/SIL1!/MBT1! futures mappings",
+      "{{ticker}} vangnet met duidelijke foutmelding",
+    ],
+    endpoints: {
+      "POST /webhook":              "TradingView alert → MT5 order",
+      "POST /close":                "Manual position close",
+      "GET  /status":               "Open trades + learned patches",
+      "GET  /live/positions":       "Open posities met max price/profit",
+      "GET  /analysis/closed":      "Gesloten trades + what-if RR",
+      "GET  /analysis/equity-curve":"Equity history (opt: ?hours=24)",
+      "GET  /trades/:symbol":       "Gesloten trades per symbool",
+      "GET  /history":              "Webhook log (opt: ?limit=50)",
+    },
+    tracking: {
+      openPositions:   Object.keys(openPositions).length,
+      closedTrades:    closedTrades.length,
+      equitySnapshots: accountSnapshots.length,
+      webhookHistory:  webhookHistory.length,
+    },
+  });
+});
+
+// ── LIVE POSITIONS ────────────────────────────────────────────
+app.get("/live/positions", (req, res) => {
+  const positions = Object.values(openPositions).map(p => ({
+    id: p.id, symbol: p.symbol, direction: p.direction,
+    entry: p.entry, sl: p.sl, lots: p.lots, riskEUR: p.riskEUR,
+    openedAt: p.openedAt, currentPrice: p.currentPrice ?? null,
+    currentPnL: p.currentPnL ?? 0, maxPrice: p.maxPrice,
+    maxProfit: p.maxProfit, lastSync: p.lastSync,
+  }));
+  res.json({ count: positions.length, positions });
+});
+
+// ── CLOSED ANALYSIS ───────────────────────────────────────────
+app.get("/analysis/closed", (req, res) => {
+  const { symbol } = req.query;
+  const trades = symbol
+    ? closedTrades.filter(t => t.symbol?.toUpperCase() === symbol.toUpperCase())
+    : closedTrades;
+
+  const bySymbol = {};
+  for (const t of trades) {
+    const s = t.symbol || "UNKNOWN";
+    if (!bySymbol[s]) bySymbol[s] = { trades: [], totalActual: 0 };
+    bySymbol[s].trades.push(t);
+    bySymbol[s].totalActual += t.maxProfit ?? 0;
+  }
+
+  const summary = Object.entries(bySymbol).map(([sym, g]) => {
+    const rrSummary = {};
+    for (const rr of ["2:1","3:1","4:1"]) {
+      const possible = g.trades.filter(t => t.whatIfRR?.[rr]?.wouldHit).length;
+      const totalPot = g.trades.reduce((sum, t) => sum + (t.whatIfRR?.[rr]?.potential ?? 0), 0);
+      rrSummary[rr] = { wouldHave: possible, totalPotential: parseFloat(totalPot.toFixed(2)) };
+    }
+    return { symbol: sym, tradeCount: g.trades.length, whatIfRR: rrSummary, trades: g.trades };
+  });
+
+  res.json({ total: trades.length, bySymbol: summary });
+});
+
+// ── EQUITY CURVE ──────────────────────────────────────────────
+app.get("/analysis/equity-curve", (req, res) => {
+  const hours  = parseInt(req.query.hours) || 24;
+  const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  res.json({ hours, count: accountSnapshots.filter(s => s.ts >= cutoff).length, snapshots: accountSnapshots.filter(s => s.ts >= cutoff) });
+});
+
+// ── TRADES BY SYMBOL ──────────────────────────────────────────
+app.get("/trades/:symbol", (req, res) => {
+  const sym = req.params.symbol.toUpperCase();
+  const trades = closedTrades.filter(t => t.symbol?.toUpperCase() === sym);
+  res.json({ symbol: sym, count: trades.length, trades });
+});
+
+// ── WEBHOOK HISTORY ───────────────────────────────────────────
+app.get("/history", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, MAX_HISTORY);
+  res.json({ count: webhookHistory.length, history: webhookHistory.slice(0, limit) });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () =>
+  console.log(`🚀 Webhook server v11 | Risico: €${RISK_EUR_BASE} | Max: €${RISK_EUR_MAX} | Sync: 30s`)
+);
