@@ -194,7 +194,7 @@ const LOT_VALUE = {
   "index":  25.00,
   "gold":    0.83,
   "silver": 25.00,
-  "natgas":  8,00,
+  "natgas":  8.00,
   "brent":  17.33,
   "crypto":  1.00,
   "stock":   1.00,
