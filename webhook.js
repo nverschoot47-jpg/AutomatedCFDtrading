@@ -191,11 +191,11 @@ const SYMBOL_MAP = {
 
 // ── LOT VALUE PER PUNT PER LOT (EUR) ─────────────────────────
 const LOT_VALUE = {
-  "index":  25.00,
-  "gold":    0.83,
-  "silver": 25.00,
-  "natgas":  8.00,
-  "brent":  8.00,
+  "index":  20.00,
+  "gold":    0.5,
+  "silver": 20.00,
+  "natgas":  5.00,
+  "brent":  1.00,
   "crypto":  1.00,
   "stock":   1.00,
 };
@@ -203,8 +203,8 @@ const LOT_VALUE = {
 // ── MIN STOP DISTANCE ─────────────────────────────────────────
 const MIN_STOP = {
   "DE30.pro":      5.0,
-  "EU50.pro":      3.0,
-  "FR40.pro":      3.0,
+  "EU50.pro":      5.0,
+  "FR40.pro":      5.0,
   "GB100.pro":     5.0,
   "US100.pro":     5.0,
   "US30.pro":      5.0,
@@ -212,21 +212,21 @@ const MIN_STOP = {
   "JP225.pro":    10.0,
   "AU200.pro":     3.0,
   "GOLD.pro":      0.5,
-  "SILVER Spot.pro": 0.05,
+  "SILVER Spot.pro": 0.2,
   "NATGAS.pro":    0.02,
-  "OILBRNT.pro":   0.05,
-  "BTCUSD":       50.0,
-  "default_stock": 0.01,
+  "OILBRNT.pro":   0.5,
+  "BTCUSD":       100.0,
+  "default_stock": 0.3,
 };
 
 // ── MAX LOTS ──────────────────────────────────────────────────
 const MAX_LOTS = {
-  "index":  2.0,
+  "index":  5.0,
   "gold":   5.0,
   "silver": 5.0,
   "natgas": 5.0,
-  "brent":  2.0,
-  "crypto": 0.1,
+  "brent":  1.0,
+  "crypto": 0.5,
   "stock": 100.0,
 };
 
