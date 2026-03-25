@@ -225,7 +225,7 @@ const MAX_LOTS = {
   "gold":   0.1,
   "silver": 5.0,
   "natgas": 5.0,
-  "brent":  0,2,
+  "brent":  0.2,
   "crypto": 0.5,
   "stock": 100.0,
 };
