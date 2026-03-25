@@ -192,7 +192,7 @@ const SYMBOL_MAP = {
 // ── LOT VALUE PER PUNT PER LOT (EUR) ─────────────────────────
 const LOT_VALUE = {
   "index":  20.00,
-  "gold":    100.00,
+  "gold":    60.00,
   "silver": 20.00,
   "natgas":  5.00,
   "brent":  500.00,
